@@ -4,21 +4,20 @@ import axios from "axios";
 import { AuthManager } from "../utils/authManager.js";
 
 /**
- * Register rate limiting security testing tools
+ * Register rate limiting testing tools
  */
 export function registerRateLimitingTools(server: McpServer) {
-  // Rate limiting test tool
+  // Rate limit testing tool
   server.tool(
     "rate_limit_check",
     {
       endpoint: z.string().url().describe("API endpoint to test"),
-      http_method: z.enum(["GET", "POST", "PUT", "DELETE"]).default("GET").describe("HTTP method to use"),
-      request_body: z.string().optional().describe("Request body (for POST/PUT requests)"),
-      requests_per_second: z.number().min(1).max(100).default(10).describe("Number of requests per second to attempt"),
-      test_duration_seconds: z.number().min(1).max(30).default(5).describe("Duration of the test in seconds"),
+      requests_per_second: z.number().min(1).max(100).default(10).describe("Number of requests per second to send"),
+      duration_seconds: z.number().min(1).max(30).default(5).describe("Duration of the test in seconds"),
+      method: z.enum(['GET', 'POST', 'PUT', 'DELETE']).default('GET').describe("HTTP method to use"),
       use_auth: z.boolean().default(true).describe("Whether to use current authentication if available"),
     },
-    async ({ endpoint, http_method, request_body, requests_per_second, test_duration_seconds, use_auth }) => {
+    async ({ endpoint, requests_per_second, duration_seconds, method, use_auth }) => {
       try {
         // Get auth headers if available and requested
         let headers = {};
@@ -31,126 +30,78 @@ export function registerRateLimitingTools(server: McpServer) {
           }
         }
         
-        // Initialize test variables
-        const results = [];
-        const startTime = Date.now();
-        const endTime = startTime + (test_duration_seconds * 1000);
-        let totalRequests = 0;
-        let successfulRequests = 0;
-        let rateLimitedRequests = 0;
-        let otherErrors = 0;
+        // Initialize test results
+        const results = {
+          totalRequests: 0,
+          successfulRequests: 0,
+          rateLimitedRequests: 0,
+          otherErrors: 0,
+          rateLimitHeaders: new Set<string>(),
+          responseTimeStats: {
+            min: Number.MAX_VALUE,
+            max: 0,
+            total: 0,
+          },
+          statusCodes: {} as Record<number, number>,
+        };
         
-        // Track rate limit headers
-        const rateLimitHeaders = new Set([
-          'x-ratelimit-limit',
-          'x-ratelimit-remaining',
-          'x-ratelimit-reset',
-          'retry-after',
-          'ratelimit-limit',
-          'ratelimit-remaining',
-          'ratelimit-reset',
-        ]);
+        // Calculate delay between requests
+        const delayMs = Math.floor(1000 / requests_per_second);
+        const endTime = Date.now() + (duration_seconds * 1000);
         
         // Make requests
         while (Date.now() < endTime) {
-          const batchStartTime = Date.now();
-          const promises = [];
+          const startTime = Date.now();
           
-          // Create batch of requests
-          for (let i = 0; i < requests_per_second; i++) {
-            promises.push(
-              axios({
-                method: http_method.toLowerCase(),
-                url: endpoint,
-                data: request_body ? JSON.parse(request_body) : undefined,
-                headers,
-                validateStatus: () => true, // Accept any status code
-              })
-            );
-          }
-          
-          // Wait for batch to complete
-          const responses = await Promise.all(promises);
-          
-          // Process responses
-          for (const response of responses) {
-            totalRequests++;
+          try {
+            const response = await axios({
+              method: method.toLowerCase(),
+              url: endpoint,
+              headers,
+              validateStatus: () => true, // Accept any status code
+            });
+            
+            const responseTime = Date.now() - startTime;
+            
+            // Update response time stats
+            results.responseTimeStats.min = Math.min(results.responseTimeStats.min, responseTime);
+            results.responseTimeStats.max = Math.max(results.responseTimeStats.max, responseTime);
+            results.responseTimeStats.total += responseTime;
+            
+            // Update status code counts
+            results.statusCodes[response.status] = (results.statusCodes[response.status] || 0) + 1;
             
             // Check for rate limit headers
-            const limitHeaders = {};
-            for (const [header, value] of Object.entries(response.headers)) {
-              if (rateLimitHeaders.has(header.toLowerCase())) {
-                limitHeaders[header] = value;
-              }
-            }
+            const rateLimitHeaders = extractRateLimitHeaders(response.headers);
+            rateLimitHeaders.forEach(header => results.rateLimitHeaders.add(header));
             
-            // Categorize response
-            if (response.status === 200) {
-              successfulRequests++;
-            } else if (
-              response.status === 429 ||
-              response.status === 503 ||
-              Object.keys(limitHeaders).length > 0
-            ) {
-              rateLimitedRequests++;
+            // Update request counts
+            results.totalRequests++;
+            if (response.status === 429) {
+              results.rateLimitedRequests++;
+            } else if (response.status >= 200 && response.status < 300) {
+              results.successfulRequests++;
             } else {
-              otherErrors++;
+              results.otherErrors++;
             }
-            
-            // Store result
-            results.push({
-              timestamp: Date.now(),
-              status: response.status,
-              headers: limitHeaders,
-              responseTime: response.config?.transitional?.timeout || 0,
-            });
+          } catch (error) {
+            results.totalRequests++;
+            results.otherErrors++;
           }
           
-          // Calculate delay for next batch
-          const batchEndTime = Date.now();
-          const batchDuration = batchEndTime - batchStartTime;
-          const targetBatchDuration = 1000; // 1 second
-          
-          if (batchDuration < targetBatchDuration) {
-            await new Promise(resolve => setTimeout(resolve, targetBatchDuration - batchDuration));
+          // Wait for the next request interval
+          const elapsed = Date.now() - startTime;
+          if (elapsed < delayMs) {
+            await new Promise(resolve => setTimeout(resolve, delayMs - elapsed));
           }
         }
         
-        // Calculate metrics
-        const actualDuration = (Date.now() - startTime) / 1000;
-        const actualRequestsPerSecond = totalRequests / actualDuration;
-        const successRate = (successfulRequests / totalRequests) * 100;
-        const rateLimitRate = (rateLimitedRequests / totalRequests) * 100;
-        
-        // Analyze rate limiting behavior
-        const analysis = analyzeRateLimiting(results);
-        
-        // Add authentication info to the report
-        const authManager = AuthManager.getInstance();
-        const authState = authManager.getAuthState();
-        const authInfo = use_auth && authState.type !== 'none'
-          ? `\nTest performed with authentication: ${authState.type}`
-          : '\nTest performed without authentication';
-        
+        // Generate report
         return {
           content: [
             {
               type: "text",
-              text: formatRateLimitResults(
-                endpoint,
-                {
-                  totalRequests,
-                  successfulRequests,
-                  rateLimitedRequests,
-                  otherErrors,
-                  actualRequestsPerSecond,
-                  successRate,
-                  rateLimitRate,
-                  duration: actualDuration,
-                },
-                analysis,
-                authInfo
-              ),
+              text: generateReport(results, endpoint, method, requests_per_second, duration_seconds),
             },
           ],
         };
@@ -159,92 +110,7 @@ export function registerRateLimitingTools(server: McpServer) {
           content: [
             {
               type: "text",
-              text: `Error testing rate limiting: ${(error as Error).message}`,
-            },
-          ],
-        };
-      }
-    }
-  );
-
-  // Concurrent sessions test tool
-  server.tool(
-    "concurrent_sessions_check",
-    {
-      login_endpoint: z.string().url().describe("Login API endpoint"),
-      test_endpoint: z.string().url().describe("API endpoint to test with authenticated sessions"),
-      login_credentials: z.string().describe("Login credentials in JSON format"),
-      concurrent_sessions: z.number().min(1).max(10).default(5).describe("Number of concurrent sessions to attempt"),
-    },
-    async ({ login_endpoint, test_endpoint, login_credentials, concurrent_sessions }) => {
-      try {
-        const credentials = JSON.parse(login_credentials);
-        const sessions = [];
-        const results = [];
-        
-        // Create multiple sessions
-        for (let i = 0; i < concurrent_sessions; i++) {
-          try {
-            // Login and get session token
-            const loginResponse = await axios.post(login_endpoint, credentials);
-            
-            if (loginResponse.status === 200 && loginResponse.data) {
-              // Store session information
-              sessions.push({
-                id: i + 1,
-                token: extractToken(loginResponse),
-                loginTime: Date.now(),
-              });
-            }
-          } catch (error) {
-            results.push({
-              sessionId: i + 1,
-              status: "Login Failed",
-              error: (error as Error).message,
-            });
-          }
-        }
-        
-        // Test all sessions
-        for (const session of sessions) {
-          try {
-            // Make request with session token
-            const response = await axios.get(test_endpoint, {
-              headers: {
-                Authorization: `Bearer ${session.token}`,
-              },
-              validateStatus: () => true,
-            });
-            
-            results.push({
-              sessionId: session.id,
-              status: response.status === 200 ? "Active" : "Invalid",
-              statusCode: response.status,
-              responseTime: response.config?.transitional?.timeout || 0,
-            });
-          } catch (error) {
-            results.push({
-              sessionId: session.id,
-              status: "Request Failed",
-              error: (error as Error).message,
-            });
-          }
-        }
-        
-        return {
-          content: [
-            {
-              type: "text",
-              text: formatConcurrentSessionResults(results, concurrent_sessions),
-            },
-          ],
-        };
-      } catch (error) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error testing concurrent sessions: ${(error as Error).message}`,
+              text: `Error testing rate limits: ${(error as Error).message}`,
             },
           ],
         };
@@ -254,243 +120,109 @@ export function registerRateLimitingTools(server: McpServer) {
 }
 
 /**
- * Analyze rate limiting behavior from results
+ * Extract rate limit headers from response
  */
-function analyzeRateLimiting(results: Array<{
-  timestamp: number;
-  status: number;
-  headers: Record<string, string>;
-  responseTime: number;
-}>): {
-  hasRateLimit: boolean;
-  limitValue?: number;
-  resetPeriod?: number;
-  pattern?: string;
-  consistency: string;
-} {
-  const analysis = {
-    hasRateLimit: false,
-    limitValue: undefined,
-    resetPeriod: undefined,
-    pattern: undefined,
-    consistency: "No rate limiting detected",
-  };
+function extractRateLimitHeaders(headers: any): string[] {
+  const rateLimitHeaders = [];
   
-  // Check if any rate limit headers were found
-  const hasLimitHeaders = results.some(r => Object.keys(r.headers).length > 0);
+  // Common rate limit headers
+  const headerPatterns = [
+    /^x-ratelimit-/i,
+    /^ratelimit-/i,
+    /^x-rate-limit-/i,
+    /^retry-after$/i,
+  ];
   
-  if (hasLimitHeaders) {
-    analysis.hasRateLimit = true;
-    
-    // Try to determine limit value
-    const limitHeaders = results
-      .map(r => r.headers)
-      .filter(h => h['x-ratelimit-limit'] || h['ratelimit-limit']);
-    
-    if (limitHeaders.length > 0) {
-      analysis.limitValue = parseInt(limitHeaders[0]['x-ratelimit-limit'] || limitHeaders[0]['ratelimit-limit']);
-    }
-    
-    // Try to determine reset period
-    const resetHeaders = results
-      .map(r => r.headers)
-      .filter(h => h['x-ratelimit-reset'] || h['ratelimit-reset']);
-    
-    if (resetHeaders.length > 0) {
-      const resetTime = parseInt(resetHeaders[0]['x-ratelimit-reset'] || resetHeaders[0]['ratelimit-reset']);
-      analysis.resetPeriod = resetTime - Math.floor(Date.now() / 1000);
-    }
-    
-    // Analyze consistency
-    const rateLimitResponses = results.filter(r => r.status === 429).length;
-    const totalResponses = results.length;
-    
-    if (rateLimitResponses > 0) {
-      const ratio = rateLimitResponses / totalResponses;
-      if (ratio > 0.8) {
-        analysis.pattern = "Strict rate limiting";
-        analysis.consistency = "Very consistent rate limiting";
-      } else if (ratio > 0.5) {
-        analysis.pattern = "Moderate rate limiting";
-        analysis.consistency = "Somewhat consistent rate limiting";
-      } else {
-        analysis.pattern = "Loose rate limiting";
-        analysis.consistency = "Inconsistent rate limiting";
-      }
-    } else if (hasLimitHeaders) {
-      analysis.pattern = "Header-based rate limiting";
-      analysis.consistency = "Rate limit headers present but no blocking";
+  for (const key in headers) {
+    if (headerPatterns.some(pattern => pattern.test(key))) {
+      rateLimitHeaders.push(`${key}: ${headers[key]}`);
     }
   }
   
-  return analysis;
+  return rateLimitHeaders;
 }
 
 /**
- * Format rate limit test results into a readable report
+ * Generate test report
  */
-function formatRateLimitResults(
+function generateReport(
+  results: any,
   endpoint: string,
-  metrics: {
-    totalRequests: number;
-    successfulRequests: number;
-    rateLimitedRequests: number;
-    otherErrors: number;
-    actualRequestsPerSecond: number;
-    successRate: number;
-    rateLimitRate: number;
-    duration: number;
-  },
-  analysis: {
-    hasRateLimit: boolean;
-    limitValue?: number;
-    resetPeriod?: number;
-    pattern?: string;
-    consistency: string;
-  },
-  authInfo: string = ''
+  method: string,
+  requestsPerSecond: number,
+  durationSeconds: number
 ): string {
-  let report = `# Rate Limiting Test Results for ${endpoint}${authInfo}\n\n`;
+  let report = `Rate Limit Test Report\n\n`;
   
-  // Add test metrics
-  report += `## Test Metrics\n\n`;
-  report += `- Total Requests: ${metrics.totalRequests}\n`;
-  report += `- Duration: ${metrics.duration.toFixed(2)} seconds\n`;
-  report += `- Actual Requests/Second: ${metrics.actualRequestsPerSecond.toFixed(2)}\n`;
-  report += `- Successful Requests: ${metrics.successfulRequests} (${metrics.successRate.toFixed(2)}%)\n`;
-  report += `- Rate Limited Requests: ${metrics.rateLimitedRequests} (${metrics.rateLimitRate.toFixed(2)}%)\n`;
-  report += `- Other Errors: ${metrics.otherErrors}\n\n`;
+  // Test configuration
+  report += `Test Configuration:\n`;
+  report += `- Endpoint: ${endpoint}\n`;
+  report += `- HTTP Method: ${method}\n`;
+  report += `- Target Rate: ${requestsPerSecond} requests/second\n`;
+  report += `- Duration: ${durationSeconds} seconds\n\n`;
   
-  // Add analysis
-  report += `## Rate Limiting Analysis\n\n`;
-  report += `- Rate Limiting Detected: ${analysis.hasRateLimit ? "Yes" : "No"}\n`;
-  if (analysis.limitValue) {
-    report += `- Rate Limit Value: ${analysis.limitValue} requests\n`;
-  }
-  if (analysis.resetPeriod) {
-    report += `- Reset Period: ${analysis.resetPeriod} seconds\n`;
-  }
-  if (analysis.pattern) {
-    report += `- Pattern: ${analysis.pattern}\n`;
-  }
-  report += `- Consistency: ${analysis.consistency}\n\n`;
+  // Request statistics
+  report += `Request Statistics:\n`;
+  report += `- Total Requests: ${results.totalRequests}\n`;
+  report += `- Successful Requests: ${results.successfulRequests} (${((results.successfulRequests / results.totalRequests) * 100).toFixed(1)}%)\n`;
+  report += `- Rate Limited (429): ${results.rateLimitedRequests} (${((results.rateLimitedRequests / results.totalRequests) * 100).toFixed(1)}%)\n`;
+  report += `- Other Errors: ${results.otherErrors} (${((results.otherErrors / results.totalRequests) * 100).toFixed(1)}%)\n\n`;
   
-  // Add recommendations
-  report += `## Recommendations\n\n`;
-  
-  if (!analysis.hasRateLimit) {
-    report += `- Implement rate limiting to protect against abuse\n`;
-    report += `- Consider using token bucket or leaky bucket algorithms\n`;
-    report += `- Add rate limit headers for transparency\n`;
-  } else if (metrics.successRate > 90) {
-    report += `- Consider stricter rate limiting policies\n`;
-    report += `- Implement progressive rate limiting\n`;
-    report += `- Monitor for abuse patterns\n`;
-  } else if (metrics.rateLimitRate > 90) {
-    report += `- Current rate limits may be too restrictive\n`;
-    report += `- Consider adjusting limits based on user roles\n`;
-    report += `- Implement retry-after headers\n`;
-  } else {
-    report += `- Monitor rate limiting effectiveness\n`;
-    report += `- Consider implementing rate limiting analytics\n`;
-    report += `- Review rate limiting policies periodically\n`;
+  // Response time statistics
+  if (results.totalRequests > 0) {
+    report += `Response Time Statistics:\n`;
+    report += `- Minimum: ${results.responseTimeStats.min}ms\n`;
+    report += `- Maximum: ${results.responseTimeStats.max}ms\n`;
+    report += `- Average: ${(results.responseTimeStats.total / results.totalRequests).toFixed(1)}ms\n\n`;
   }
+  
+  // Status code distribution
+  report += `Status Code Distribution:\n`;
+  Object.entries(results.statusCodes)
+    .sort(([a], [b]) => parseInt(a) - parseInt(b))
+    .forEach(([code, count]) => {
+      report += `- ${code}: ${count} (${((count as number / results.totalRequests) * 100).toFixed(1)}%)\n`;
+    });
+  report += `\n`;
+  
+  // Rate limit headers
+  if (results.rateLimitHeaders.size > 0) {
+    report += `Rate Limit Headers Detected:\n`;
+    Array.from(results.rateLimitHeaders).forEach(header => {
+      report += `- ${header}\n`;
+    });
+    report += `\n`;
+  }
+  
+  // Analysis and recommendations
+  report += `Analysis:\n`;
+  
+  if (results.rateLimitedRequests > 0) {
+    report += `- Rate limiting is implemented and active\n`;
+    const rateLimitThreshold = (results.totalRequests / durationSeconds).toFixed(1);
+    report += `- Rate limit threshold appears to be around ${rateLimitThreshold} requests/second\n`;
+  } else if (results.totalRequests > 0) {
+    report += `- No rate limiting detected at ${requestsPerSecond} requests/second\n`;
+    report += `- Consider implementing rate limiting for API protection\n`;
+  }
+  
+  if (results.rateLimitHeaders.size === 0) {
+    report += `- No standard rate limit headers detected\n`;
+    report += `- Consider implementing standard rate limit headers for better client integration\n`;
+  }
+  
+  report += `\nRecommendations:\n`;
+  report += `1. Implement consistent rate limiting across all endpoints\n`;
+  report += `2. Use standard rate limit headers (X-RateLimit-*)\n`;
+  report += `3. Include Retry-After headers with 429 responses\n`;
+  report += `4. Consider implementing different limits for:\n`;
+  report += `   - Authenticated vs unauthenticated requests\n`;
+  report += `   - Different API endpoints based on resource intensity\n`;
+  report += `   - Different client types or subscription levels\n`;
+  report += `5. Monitor and adjust rate limits based on:\n`;
+  report += `   - Server resource utilization\n`;
+  report += `   - API usage patterns\n`;
+  report += `   - Client needs and feedback\n`;
   
   return report;
-}
-
-/**
- * Format concurrent session test results into a readable report
- */
-function formatConcurrentSessionResults(
-  results: Array<{
-    sessionId: number;
-    status: string;
-    statusCode?: number;
-    responseTime?: number;
-    error?: string;
-  }>,
-  attemptedSessions: number
-): string {
-  let report = `# Concurrent Sessions Test Results\n\n`;
-  
-  // Calculate metrics
-  const activeSessions = results.filter(r => r.status === "Active").length;
-  const failedLogins = results.filter(r => r.status === "Login Failed").length;
-  const invalidSessions = results.filter(r => r.status === "Invalid").length;
-  const failedRequests = results.filter(r => r.status === "Request Failed").length;
-  
-  // Add summary
-  report += `## Summary\n\n`;
-  report += `- Attempted Sessions: ${attemptedSessions}\n`;
-  report += `- Active Sessions: ${activeSessions}\n`;
-  report += `- Failed Logins: ${failedLogins}\n`;
-  report += `- Invalid Sessions: ${invalidSessions}\n`;
-  report += `- Failed Requests: ${failedRequests}\n\n`;
-  
-  // Add detailed results
-  report += `## Detailed Results\n\n`;
-  
-  for (const result of results) {
-    report += `### Session ${result.sessionId}\n`;
-    report += `- Status: ${result.status}\n`;
-    if (result.statusCode) {
-      report += `- Status Code: ${result.statusCode}\n`;
-    }
-    if (result.responseTime) {
-      report += `- Response Time: ${result.responseTime}ms\n`;
-    }
-    if (result.error) {
-      report += `- Error: ${result.error}\n`;
-    }
-    report += "\n";
-  }
-  
-  // Add analysis and recommendations
-  report += `## Analysis and Recommendations\n\n`;
-  
-  if (activeSessions === attemptedSessions) {
-    report += `- The application allows multiple concurrent sessions\n`;
-    report += `- Consider implementing session limits if needed\n`;
-    report += `- Monitor for suspicious concurrent session patterns\n`;
-  } else if (activeSessions === 1) {
-    report += `- The application enforces single session policy\n`;
-    report += `- Ensure proper session invalidation on new logins\n`;
-    report += `- Consider adding session notifications\n`;
-  } else if (activeSessions === 0) {
-    report += `- No sessions were successfully established\n`;
-    report += `- Review authentication mechanism\n`;
-    report += `- Check for rate limiting or security controls\n`;
-  } else {
-    report += `- Inconsistent session behavior detected\n`;
-    report += `- Review session management implementation\n`;
-    report += `- Consider implementing clear session policies\n`;
-  }
-  
-  return report;
-}
-
-/**
- * Extract authentication token from login response
- */
-function extractToken(response: any): string {
-  // Check common token locations in response
-  if (response.data.token) {
-    return response.data.token;
-  }
-  if (response.data.access_token) {
-    return response.data.access_token;
-  }
-  if (response.data.jwt) {
-    return response.data.jwt;
-  }
-  
-  // Check authorization header
-  const authHeader = response.headers['authorization'];
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    return authHeader.substring(7);
-  }
-  
-  // If no token found, throw error
-  throw new Error('No authentication token found in response');
 }
