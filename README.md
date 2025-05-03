@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/ricauts-cybermcp-badge.png)](https://mseep.ai/app/ricauts-cybermcp)
+
 # CyberMCP - Cybersecurity API Testing with MCP
 
 CyberMCP is a Model Context Protocol (MCP) server designed for testing backend APIs for security vulnerabilities. It provides a set of specialized tools and resources that can be used by LLMs to identify common security issues in APIs.
