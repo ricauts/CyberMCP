@@ -50,9 +50,9 @@ export function registerDataLeakageTools(server: McpServer) {
           { type: "Social Security Number", regex: /\b\d{3}[-]?\d{2}[-]?\d{4}\b/g },
           
           // Credentials and Tokens
-          { type: "API Key", regex: /(api[_-]?key|apikey|access[_-]?key|auth[_-]?key)[\"]?\s*[=:]\s*[\"]?([a-zA-Z0-9]{16,})/gi },
+          { type: "API Key", regex: /(api[_-]?key|apikey|access[_-]?key|auth[_-]?key)[\"']?\s*[=:]\s*[\"']?([a-zA-Z0-9]{16,})/gi },
           { type: "JWT", regex: /eyJ[a-zA-Z0-9_-]{5,}\.eyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}/g },
-          { type: "Password", regex: /(password|passwd|pwd)[\"]?\s*[=:]\s*[\"]?([^\"']{3,})/gi },
+          { type: "Password", regex: /(password|passwd|pwd)[\"']?\s*[=:]\s*[\"']?([^\"']{3,})/gi },
           
           // Internal Info
           { type: "Internal Path", regex: /(\/var\/www\/|\/home\/\w+\/|C:\\Program Files\\|C:\\inetpub\\)/gi },
@@ -248,10 +248,29 @@ function checkSensitiveHeaders(headers: any): Array<{ name: string; value: strin
     "X-Content-Type-Options",
     "X-Frame-Options",
     "Strict-Transport-Security",
+    "X-XSS-Protection",
   ];
   
+  // Look for problematic headers
+  if (headers["Server"]) {
+    sensitiveHeaders.push({
+      name: "Server",
+      value: headers["Server"],
+      issue: "Reveals server software information",
+    });
+  }
+  
+  if (headers["X-Powered-By"]) {
+    sensitiveHeaders.push({
+      name: "X-Powered-By",
+      value: headers["X-Powered-By"],
+      issue: "Reveals technology stack information",
+    });
+  }
+  
+  // Check for missing security headers
   for (const header of securityHeaders) {
-    if (!headers[header.toLowerCase()]) {
+    if (!headers[header]) {
       sensitiveHeaders.push({
         name: header,
         value: "Missing",
@@ -260,67 +279,46 @@ function checkSensitiveHeaders(headers: any): Array<{ name: string; value: strin
     }
   }
   
-  // Check for sensitive information in headers
-  for (const [name, value] of Object.entries(headers)) {
-    // Check for server information
-    if (name.toLowerCase() === "server") {
-      sensitiveHeaders.push({
-        name,
-        value: value as string,
-        issue: "Server header reveals software information",
-      });
-    }
-    
-    // Check for internal paths in headers
-    if ((value as string).match(/(\/var\/www\/|\/home\/\w+\/|C:\\Program Files\\|C:\\inetpub\\)/i)) {
-      sensitiveHeaders.push({
-        name,
-        value: value as string,
-        issue: "Header contains internal path information",
-      });
-    }
-  }
-  
   return sensitiveHeaders;
 }
 
 /**
- * Check for detailed error information
+ * Check for detailed error information in the response
  */
-function checkErrorDetails(response: any): { hasDetailed: boolean; details: string } {
-  const result = {
+function checkErrorDetails(response: any): any {
+  const errorInfo = {
     hasDetailed: false,
     details: "",
   };
   
-  // Check if it's an error response
-  if (response.status >= 400) {
+  // Check status code first
+  if (response.status >= 400 && response.status < 600) {
     const responseBody = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
     
-    // Check for stack traces
-    if (responseBody.match(/(Exception|Error):\s*.*?at\s+[\w.<>$_]+\s+\(.*?:\d+:\d+\)/s)) {
-      result.hasDetailed = true;
-      result.details += "Response contains stack trace information\n";
+    // Look for stack traces
+    if (responseBody.includes("at ") && responseBody.includes("line ") && responseBody.includes("file")) {
+      errorInfo.hasDetailed = true;
+      errorInfo.details = "Stack trace or file paths exposed in error response";
     }
     
-    // Check for database errors
-    if (responseBody.match(/((ORA|MySQL|postgresql|SQL Server)-\d{4,5}|SQLSTATE)/i)) {
-      result.hasDetailed = true;
-      result.details += "Response contains database error information\n";
+    // Look for SQL errors
+    if (responseBody.includes("SQL") && responseBody.includes("error")) {
+      errorInfo.hasDetailed = true;
+      errorInfo.details = "SQL error details exposed";
     }
     
-    // Check for detailed system paths
-    if (responseBody.match(/(\/var\/www\/|\/home\/\w+\/|C:\\Program Files\\|C:\\inetpub\\)/i)) {
-      result.hasDetailed = true;
-      result.details += "Response contains internal system paths\n";
+    // Look for exception details
+    if (responseBody.includes("Exception") || responseBody.includes("Error:")) {
+      errorInfo.hasDetailed = true;
+      errorInfo.details = "Exception details exposed";
     }
   }
   
-  return result;
+  return errorInfo;
 }
 
 /**
- * Format findings into a readable report
+ * Format the findings into a readable report
  */
 function formatFindings(
   findings: Array<{ type: string; occurrence: number; examples: string[]; severity: string }>,
@@ -331,63 +329,42 @@ function formatFindings(
 ): string {
   let report = `# Data Leakage Analysis for ${endpoint}${authInfo}\n\n`;
   
-  // Group findings by severity
-  const groupedFindings = {
-    High: findings.filter(f => f.severity === "High"),
-    Medium: findings.filter(f => f.severity === "Medium"),
-    Low: findings.filter(f => f.severity === "Low"),
-    Info: findings.filter(f => f.severity === "Info"),
-  };
-  
-  // Add findings to report
-  for (const [severity, items] of Object.entries(groupedFindings)) {
-    if (items.length > 0) {
-      report += `## ${severity} Severity Findings\n\n`;
-      
-      for (const finding of items) {
-        report += `### ${finding.type}\n`;
-        report += `- Occurrences: ${finding.occurrence}\n`;
-        report += `- Examples:\n${finding.examples.map(ex => `  * ${ex}\n`).join('')}\n`;
-      }
-    }
+  if (findings.length === 0 && sensitiveHeaders.length === 0 && !errorDetails.hasDetailed) {
+    report += "No data leakage detected.\n";
+    return report;
   }
-  
-  // Add header findings
-  if (sensitiveHeaders.length > 0) {
-    report += `## Security Header Issues\n\n`;
-    for (const header of sensitiveHeaders) {
-      report += `- ${header.issue}\n`;
-      if (header.value !== "Missing") {
-        report += `  Value: ${header.value}\n`;
-      }
-    }
-    report += "\n";
-  }
-  
-  // Add error information findings
-  if (errorDetails.hasDetailed) {
-    report += `## Detailed Error Information\n\n${errorDetails.details}\n`;
-  }
-  
-  // Add recommendations
-  report += "\n## Recommendations\n\n";
   
   if (findings.length > 0) {
-    report += "- Implement data masking for sensitive information\n";
-    report += "- Review and update data filtering policies\n";
-    report += "- Implement proper error handling to prevent information leakage\n";
+    report += "## Sensitive Data in Response\n\n";
+    
+    for (const finding of findings) {
+      report += `- **${finding.type}** (Severity: ${finding.severity})\n`;
+      report += `  - Occurrences: ${finding.occurrence}\n`;
+      report += `  - Examples: ${finding.examples.map(e => `"${e}"`).join(", ")}\n\n`;
+    }
   }
   
   if (sensitiveHeaders.length > 0) {
-    report += "- Configure proper security headers\n";
-    report += "- Remove or mask server information headers\n";
+    report += "## Header Issues\n\n";
+    
+    for (const header of sensitiveHeaders) {
+      report += `- **${header.name}**: ${header.value}\n`;
+      report += `  - Issue: ${header.issue}\n\n`;
+    }
   }
   
   if (errorDetails.hasDetailed) {
-    report += "- Implement proper error handling in production\n";
-    report += "- Use generic error messages\n";
-    report += "- Log detailed errors server-side only\n";
+    report += "## Error Handling Issues\n\n";
+    report += `- ${errorDetails.details}\n`;
+    report += "- Recommendation: Implement proper error handling to avoid leaking implementation details.\n\n";
   }
+  
+  report += "## Recommendations\n\n";
+  report += "1. Implement proper data filtering before sending responses\n";
+  report += "2. Add security headers to protect against common attacks\n";
+  report += "3. Use generic error messages that don't reveal implementation details\n";
+  report += "4. Implement proper content security policies\n";
+  report += "5. Avoid including sensitive data in responses unless absolutely necessary\n";
   
   return report;
 }
@@ -396,24 +373,35 @@ function formatFindings(
  * Check for signs of successful directory traversal
  */
 function checkForTraversalSuccess(responseBody: string, payload: string): boolean {
-  // Common patterns that might indicate successful traversal
-  const successPatterns = [
-    // Unix-like patterns
-    /root:.*:0:0:/,                 // /etc/passwd content
-    /\[boot loader\]/i,             // Windows boot.ini content
-    /\[fonts\]/i,                   // Windows .ini file section
-    /\[extensions\]/i,              // Windows .ini file section
-    /\[mci extensions\]/i,          // Windows system.ini content
-    /\[drivers\]/i,                 // Windows system.ini content
-    /\[files\]/i,                   // Windows .ini file section
-    /\[.ShellClassInfo\]/i,         // Windows folder configuration
-    /WINDOWS\/system32/i,           // Windows system path
-    /\/(bin|etc|usr|var|root)\//,   // Common Unix directories
-    /Permission denied/i,           // Permission errors (might indicate partial success)
-    /No such file or directory/i,   // File system errors
-    /cannot|could not|failed to/i,  // Generic error messages that might indicate interaction with file system
+  // Signs that might indicate successful path traversal
+  const unixSigns = [
+    "root:x:",
+    "bin:x:",
+    "/home/",
+    "/usr/",
+    "Permission denied",
+    "No such file or directory",
   ];
   
-  // Check if response contains any of the success patterns
-  return successPatterns.some(pattern => pattern.test(responseBody));
-}
+  const windowsSigns = [
+    "[boot loader]",
+    "[fonts]",
+    "for 16-bit app support",
+    "MSDOS.SYS",
+    "files=",
+    "Access is denied",
+  ];
+  
+  // Check based on payload type
+  if (payload.includes("etc/passwd") || payload.includes("/dev/")) {
+    return unixSigns.some(sign => responseBody.includes(sign));
+  } else if (payload.includes("Windows") || payload.includes("system.ini")) {
+    return windowsSigns.some(sign => responseBody.includes(sign));
+  }
+  
+  // Generic suspicious content that might indicate successful traversal
+  return (
+    (responseBody.includes("/") && responseBody.includes(":") && responseBody.includes("root")) ||
+    (responseBody.includes("\\") && responseBody.includes(":") && responseBody.includes("Windows"))
+  );
+} 

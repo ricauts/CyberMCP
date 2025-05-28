@@ -15,4 +15,4 @@ export function registerSecurityTools(server: McpServer) {
   registerDataLeakageTools(server);
   registerRateLimitingTools(server);
   registerSecurityHeadersTools(server);
-}
+} 

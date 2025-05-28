@@ -143,6 +143,53 @@ export function registerAuthenticationTools(server: McpServer) {
     }
   );
   
+  // Custom API login tool
+  server.tool(
+    "api_login",
+    {
+      login_url: z.string().url().describe("API login endpoint URL"),
+      credentials: z.record(z.string()).describe("Login credentials as key-value pairs"),
+      method: z.enum(['post', 'get']).default('post').describe("HTTP method to use"),
+      token_path: z.string().default("token").describe("Path to token in the response (e.g., 'data.accessToken')"),
+      token_prefix: z.string().default("Bearer").describe("Token prefix to use in Authorization header"),
+      header_name: z.string().default("Authorization").describe("Header name to use for the token"),
+    },
+    async ({ login_url, credentials, method, token_path, token_prefix, header_name }) => {
+      try {
+        const authManager = AuthManager.getInstance();
+        
+        const authState = await authManager.authenticateWithApi(
+          login_url,
+          credentials,
+          {
+            method,
+            tokenPath: token_path,
+            tokenPrefix: token_prefix,
+            headerName: header_name
+          }
+        );
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Successfully authenticated with API login\nEndpoint: ${login_url}\nToken header: ${header_name}: ${token_prefix} ***\n${authState.tokenExpiry ? `Token expires: ${authState.tokenExpiry.toISOString()}` : ''}`,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error logging in to API: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+  
   // Get current auth status
   server.tool(
     "auth_status",
@@ -206,4 +253,228 @@ export function registerAuthenticationTools(server: McpServer) {
       };
     }
   );
-}
+
+  // Test for JWT weakness
+  server.tool(
+    "jwt_vulnerability_check",
+    {
+      jwt_token: z.string().describe("JWT token to analyze for vulnerabilities"),
+    },
+    async ({ jwt_token }) => {
+      try {
+        // Split the token
+        const parts = jwt_token.split(".");
+        if (parts.length !== 3) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Invalid JWT format. Expected 3 parts (header.payload.signature).",
+              },
+            ],
+          };
+        }
+
+        // Decode header
+        const headerBase64 = parts[0];
+        const headerJson = Buffer.from(headerBase64, "base64").toString();
+        const header = JSON.parse(headerJson);
+
+        // Decode payload
+        const payloadBase64 = parts[1];
+        const payloadJson = Buffer.from(payloadBase64, "base64").toString();
+        const payload = JSON.parse(payloadJson);
+
+        // Check for security issues
+        const issues = [];
+
+        // Check algorithm
+        if (header.alg === "none") {
+          issues.push("Critical: 'none' algorithm used - authentication can be bypassed");
+        }
+
+        if (header.alg === "HS256" || header.alg === "RS256") {
+          // These are generally good, but we'll note it
+        } else {
+          issues.push(`Warning: Unusual algorithm ${header.alg} - verify if intended`);
+        }
+
+        // Check expiration
+        if (!payload.exp) {
+          issues.push("High: No expiration claim (exp) - token never expires");
+        } else {
+          const expDate = new Date(payload.exp * 1000);
+          const now = new Date();
+          if (expDate < now) {
+            issues.push(`Info: Token expired on ${expDate.toISOString()}`);
+          } else {
+            const daysDiff = Math.floor((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+            if (daysDiff > 30) {
+              issues.push(`Medium: Long expiration time (${daysDiff} days) - consider shorter lifetime`);
+            }
+          }
+        }
+
+        // Check for missing recommended claims
+        if (!payload.iat) {
+          issues.push("Low: Missing 'issued at' claim (iat)");
+        }
+        if (!payload.iss) {
+          issues.push("Low: Missing 'issuer' claim (iss)");
+        }
+        if (!payload.sub) {
+          issues.push("Low: Missing 'subject' claim (sub)");
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: issues.length > 0
+                ? `JWT Analysis Results:\n\nHeader: ${JSON.stringify(header, null, 2)}\n\nPayload: ${JSON.stringify(payload, null, 2)}\n\nSecurity Issues:\n${issues.join("\n")}`
+                : `JWT Analysis Results:\n\nHeader: ${JSON.stringify(header, null, 2)}\n\nPayload: ${JSON.stringify(payload, null, 2)}\n\nNo security issues detected.`,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error analyzing JWT: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+
+  // Test for authentication bypass
+  server.tool(
+    "auth_bypass_check",
+    {
+      endpoint: z.string().url().describe("API endpoint to test"),
+      auth_header: z.string().optional().describe("Authentication header name (if different from standard)"),
+      auth_token: z.string().optional().describe("Authentication token (if not using the currently authenticated session)"),
+      http_method: z.enum(["GET", "POST", "PUT", "DELETE", "PATCH"]).default("GET").describe("HTTP method to use"),
+      use_session_auth: z.boolean().default(true).describe("Whether to use the current session authentication if available"),
+    },
+    async ({ endpoint, auth_header, auth_token, http_method, use_session_auth }) => {
+      const results = [];
+      const authManager = AuthManager.getInstance();
+      const currentAuthState = authManager.getAuthState();
+      const hasCurrentAuth = currentAuthState.type !== 'none' && use_session_auth;
+
+      try {
+        // Test 1: No authentication
+        const noAuthResponse = await axios({
+          method: http_method.toLowerCase(),
+          url: endpoint,
+          validateStatus: () => true, // Accept any status code
+        });
+
+        results.push({
+          test: "No Authentication",
+          status: noAuthResponse.status,
+          vulnerable: noAuthResponse.status < 400, // Vulnerable if not returning 4xx error
+          details: `Response without authentication returned status code ${noAuthResponse.status}`,
+        });
+
+        // Test 2: Invalid token
+        const headerName = auth_header || "Authorization";
+        const invalidTokenResponse = await axios({
+          method: http_method.toLowerCase(),
+          url: endpoint,
+          headers: {
+            [headerName]: "Bearer invalid_token_here",
+          },
+          validateStatus: () => true,
+        });
+
+        results.push({
+          test: "Invalid Token",
+          status: invalidTokenResponse.status,
+          vulnerable: invalidTokenResponse.status < 400,
+          details: `Response with invalid token returned status code ${invalidTokenResponse.status}`,
+        });
+
+        // Test 3: Empty token
+        const emptyTokenResponse = await axios({
+          method: http_method.toLowerCase(),
+          url: endpoint,
+          headers: {
+            [headerName]: "",
+          },
+          validateStatus: () => true,
+        });
+
+        results.push({
+          test: "Empty Token",
+          status: emptyTokenResponse.status,
+          vulnerable: emptyTokenResponse.status < 400,
+          details: `Response with empty token returned status code ${emptyTokenResponse.status}`,
+        });
+
+        // Test 4: If we have current auth or a provided token, test with valid auth
+        if (hasCurrentAuth || auth_token) {
+          let authHeaders = {};
+          
+          if (hasCurrentAuth) {
+            authHeaders = authManager.getAuthHeaders();
+          } else if (auth_token) {
+            authHeaders = {
+              [headerName]: `Bearer ${auth_token}`,
+            };
+          }
+          
+          const validAuthResponse = await axios({
+            method: http_method.toLowerCase(),
+            url: endpoint,
+            headers: authHeaders,
+            validateStatus: () => true,
+          });
+          
+          results.push({
+            test: "Valid Authentication",
+            status: validAuthResponse.status,
+            authorized: validAuthResponse.status < 400,
+            details: `Response with valid authentication returned status code ${validAuthResponse.status}`,
+          });
+          
+          // Check if we get the same response with and without auth
+          const authBypassRisk = noAuthResponse.status === validAuthResponse.status && 
+                               noAuthResponse.status < 400 && 
+                               JSON.stringify(noAuthResponse.data) === JSON.stringify(validAuthResponse.data);
+          
+          if (authBypassRisk) {
+            results.push({
+              test: "Authentication Effectiveness",
+              vulnerable: true,
+              details: "CRITICAL: Endpoint returns the same response with and without authentication. Authentication may be ineffective.",
+            });
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Authentication Bypass Test Results for ${endpoint}:\n\n${results.map(r => 
+                `Test: ${r.test}\n${r.status ? `Status: ${r.status}\n` : ''}${r.vulnerable !== undefined ? `Vulnerable: ${r.vulnerable}\n` : ''}${r.authorized !== undefined ? `Authorized: ${r.authorized}\n` : ''}Details: ${r.details}\n`
+              ).join("\n")}`,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error testing authentication bypass: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+} 
