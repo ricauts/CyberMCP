@@ -7,14 +7,27 @@ export function registerResources(server: McpServer) {
   // Register cybersecurity checklists resource
   server.resource(
     "cybersecurity_checklists",
-    new ResourceTemplate("cybersecurity://checklists/{category}", { list: "cybersecurity://checklists" }),
+    new ResourceTemplate("cybersecurity://checklists/{category}", { 
+      list: async () => {
+        const categories = ["authentication", "injection", "data_leakage", "rate_limiting", "general"];
+        return {
+          resources: categories.map(category => ({
+            uri: `cybersecurity://checklists/${category}`,
+            name: `${category.charAt(0).toUpperCase() + category.slice(1).replace('_', ' ')} Security Checklist`,
+            description: `Security checklist for ${category.replace('_', ' ')} vulnerabilities`,
+            mimeType: "text/markdown"
+          }))
+        };
+      }
+    }),
     async (uri, { category }) => {
-      const checklists = getChecklist(category);
+      const checklists = getChecklist(category as string);
       
       return {
         contents: [{
           uri: uri.href,
           text: checklists,
+          mimeType: "text/markdown"
         }]
       };
     }
@@ -23,14 +36,27 @@ export function registerResources(server: McpServer) {
   // Register API testing guide resource
   server.resource(
     "testing_guides",
-    new ResourceTemplate("guides://api-testing/{topic}", { list: "guides://api-testing" }),
+    new ResourceTemplate("guides://api-testing/{topic}", { 
+      list: async () => {
+        const topics = ["jwt-testing", "auth-bypass", "sql-injection", "xss", "rate-limiting"];
+        return {
+          resources: topics.map(topic => ({
+            uri: `guides://api-testing/${topic}`,
+            name: `${topic.charAt(0).toUpperCase() + topic.slice(1).replace('-', ' ')} Testing Guide`,
+            description: `Comprehensive guide for testing ${topic.replace('-', ' ')} vulnerabilities`,
+            mimeType: "text/markdown"
+          }))
+        };
+      }
+    }),
     async (uri, { topic }) => {
-      const guide = getGuide(topic);
+      const guide = getGuide(topic as string);
       
       return {
         contents: [{
           uri: uri.href,
           text: guide,
+          mimeType: "text/markdown"
         }]
       };
     }
@@ -198,137 +224,440 @@ function getGuide(topic: string): string {
     "jwt-testing": `
 # JWT Security Testing Guide
 
-## Understanding JWT
-JSON Web Tokens (JWT) consist of three parts: header, payload, and signature. Each security test should examine all three components.
+## Overview
+JSON Web Tokens (JWT) are a popular method for transmitting information securely between parties. However, improper implementation can lead to serious security vulnerabilities.
 
-## Common Vulnerabilities
-1. **Algorithm None Attack**: Some JWT libraries accept tokens with the "alg" set to "none"
-2. **Weak Signature**: Use of weak keys or algorithms
-3. **Missing Claims**: Absence of important claims like 'exp', 'iat', 'nbf'
-4. **Information Disclosure**: Sensitive information stored in the payload
-5. **Brute Force Attacks**: Weak secrets vulnerable to brute forcing
+## Common JWT Vulnerabilities
 
-## Testing Methodology
-1. Decode the JWT and examine its structure
-2. Check if the "alg" parameter can be manipulated
-3. Test for token expiration validation
-4. Attempt to modify the payload without changing the signature
-5. Check for signature validation bypass
+### 1. Algorithm Confusion Attacks
+**What to test:**
+- Change the algorithm from RS256 to HS256
+- Set algorithm to "none"
+- Use empty signature
 
-## Remediation
-1. Use strong algorithms (RS256, ES256)
-2. Include all necessary claims
-3. Set appropriate expiration times
-4. Validate all parts of the token
-5. Use strong, unique secrets for each application
+**Test steps:**
+1. Decode the JWT header and payload
+2. Modify the "alg" field in the header
+3. Re-encode and send the modified token
+4. Observe if the application accepts the token
+
+### 2. Weak Secret Keys
+**What to test:**
+- Brute force weak signing keys
+- Use common passwords as signing keys
+
+**Test steps:**
+1. Extract the JWT signature
+2. Attempt to crack the signing key using tools like hashcat
+3. Use common passwords and dictionary attacks
+
+### 3. Key Confusion
+**What to test:**
+- Use public key as HMAC secret
+- Confusion between different key types
+
+### 4. JWT Injection
+**What to test:**
+- Modify claims to escalate privileges
+- Change user ID or role information
+- Extend token expiration
+
+**Example payload manipulation:**
+\`\`\`json
+{
+  "sub": "1234567890",
+  "name": "John Doe",
+  "role": "admin",  // Changed from "user"
+  "iat": 1516239022
+}
+\`\`\`
+
+## Testing Tools
+- jwt.io - For decoding and encoding JWTs
+- hashcat - For cracking weak keys
+- Burp Suite - JWT extension for testing
+- Custom scripts for automated testing
+
+## Recommendations
+- Use strong, random signing keys
+- Implement proper algorithm validation
+- Set appropriate token expiration times
+- Validate all JWT claims server-side
 `,
 
     "auth-bypass": `
 # Authentication Bypass Testing Guide
 
-## Understanding Authentication Bypass
-Authentication bypass occurs when an attacker can access protected resources without proper authentication.
+## Overview
+Authentication bypass vulnerabilities allow attackers to access protected resources without proper authentication.
 
-## Common Vulnerabilities
-1. **Missing Authentication**: Endpoints failing to verify authentication
-2. **Insecure Direct Object References**: Accessing resources by changing identifiers
-3. **Session Fixation**: Forcing a user to use a known session ID
-4. **Broken Authentication Logic**: Flaws in authentication workflows
+## Common Authentication Bypass Techniques
+
+### 1. Direct Object Reference
+**What to test:**
+- Access protected resources directly
+- Modify user IDs in requests
+- Use predictable resource identifiers
+
+**Test steps:**
+1. Identify protected endpoints
+2. Try accessing them without authentication
+3. Modify user identifiers in authenticated requests
+4. Test for predictable patterns in resource IDs
+
+### 2. Parameter Pollution
+**What to test:**
+- Duplicate authentication parameters
+- Use different parameter names
+- URL encoding attacks
+
+**Examples:**
+\`\`\`
+POST /api/login
+user=admin&user=guest&password=test
+
+GET /api/user?id=1&id=2
+\`\`\`
+
+### 3. HTTP Method Override
+**What to test:**
+- Use different HTTP methods
+- X-HTTP-Method-Override header
+- Method override via form parameters
+
+### 4. Path Traversal in Authentication
+**What to test:**
+- URL encoding in paths
+- Directory traversal sequences
+- Case sensitivity bypass
+
+**Examples:**
+\`\`\`
+/admin/../../api/user
+/Admin (case variation)
+/admin%2f../user
+\`\`\`
+
+### 5. JSON Parameter Injection
+**What to test:**
+- Array injection in JSON
+- Type confusion attacks
+- Boolean confusion
+
+**Examples:**
+\`\`\`json
+{
+  "username": ["admin", "guest"],
+  "password": "test"
+}
+
+{
+  "admin": true,
+  "username": "guest"
+}
+\`\`\`
 
 ## Testing Methodology
-1. Remove authentication tokens and attempt access
-2. Manipulate session identifiers
-3. Try accessing resources with IDs of other users
-4. Test for logic flaws in authentication workflows
-5. Check for session timeout enforcement
+1. Map all authentication mechanisms
+2. Identify authentication decision points
+3. Test each bypass technique systematically
+4. Analyze server responses for inconsistencies
+5. Document all findings with proof of concept
 
-## Remediation
-1. Implement consistent authentication checks
-2. Use proper session management
-3. Implement proper authorization checks
-4. Use indirect object references
-5. Enforce proper authentication workflows
+## Tools
+- Burp Suite - Authentication testing
+- OWASP ZAP - Automated scanner
+- Custom scripts for specific tests
+- Browser developer tools
 `,
 
     "sql-injection": `
 # SQL Injection Testing Guide
 
-## Understanding SQL Injection
-SQL injection occurs when untrusted user input is directly used in SQL queries.
+## Overview
+SQL injection occurs when user input is not properly sanitized before being used in SQL queries.
 
-## Common Vulnerabilities
-1. **Classic SQL Injection**: Direct insertion of SQL code
-2. **Blind SQL Injection**: No direct output but observable behavior
-3. **Time-Based SQL Injection**: Using time delays to infer results
-4. **Error-Based SQL Injection**: Using error messages to extract data
+## Types of SQL Injection
+
+### 1. Union-based SQL Injection
+**What to test:**
+- UNION SELECT statements
+- Column number enumeration
+- Data extraction via UNION
+
+**Test payloads:**
+\`\`\`sql
+' UNION SELECT NULL,NULL,NULL--
+' UNION SELECT username,password FROM users--
+' UNION SELECT version(),database(),user()--
+\`\`\`
+
+### 2. Boolean-based Blind SQL Injection
+**What to test:**
+- True/false conditions
+- Time-based delays
+- Character-by-character extraction
+
+**Test payloads:**
+\`\`\`sql
+' AND 1=1--
+' AND 1=2--
+' AND (SELECT COUNT(*) FROM users)>0--
+' AND (SELECT SUBSTRING(username,1,1) FROM users LIMIT 1)='a'--
+\`\`\`
+
+### 3. Time-based SQL Injection
+**What to test:**
+- Database-specific delay functions
+- Conditional time delays
+
+**Test payloads:**
+\`\`\`sql
+'; WAITFOR DELAY '00:00:05'--
+'; SELECT SLEEP(5)--
+'; SELECT pg_sleep(5)--
+\`\`\`
+
+### 4. Error-based SQL Injection
+**What to test:**
+- Error message information disclosure
+- Database fingerprinting via errors
+
+**Test payloads:**
+\`\`\`sql
+'
+' AND (SELECT COUNT(*) FROM information_schema.tables)>0--
+' AND extractvalue(1,concat(0x7e,(SELECT version()),0x7e))--
+\`\`\`
 
 ## Testing Methodology
-1. Test with single quotes and SQL commands
-2. Look for error messages that reveal database information
-3. Test for blind injection using boolean conditions
-4. Test for time-based injection using sleep/delay functions
-5. Test for stacked queries using semicolons
+1. Identify input parameters
+2. Test for SQL injection points
+3. Determine database type and version
+4. Extract database schema
+5. Extract sensitive data
+6. Test for write access and file operations
 
-## Remediation
-1. Use parameterized queries or prepared statements
-2. Implement input validation and sanitization
-3. Apply least privilege principle to database accounts
-4. Use ORM frameworks properly
-5. Implement proper error handling
+## Advanced Techniques
+- Second-order SQL injection
+- Stored procedure injection
+- NoSQL injection variants
+- ORM injection attacks
+
+## Prevention Testing
+- Verify parameterized queries
+- Test input validation effectiveness
+- Check error handling
+- Validate least privilege principles
+
+## Tools
+- SQLMap - Automated SQL injection testing
+- Burp Suite - Manual testing
+- Custom payloads and scripts
+- Database-specific tools
 `,
 
     "xss": `
-# Cross-Site Scripting (XSS) Testing Guide for APIs
+# Cross-Site Scripting (XSS) Testing Guide
 
-## Understanding XSS in APIs
-While traditional XSS affects web pages, APIs can still be vulnerable if they return user-supplied data that gets rendered in a browser.
+## Overview
+XSS vulnerabilities allow attackers to inject malicious scripts into web applications.
 
-## Common Vulnerabilities
-1. **Reflected XSS**: User input is returned in API responses without sanitization
-2. **Stored XSS**: Malicious data is stored and later returned to other users
-3. **DOM-Based XSS**: Client-side code processes API data insecurely
+## Types of XSS
 
-## Testing Methodology
-1. Submit JS payloads in all API parameters
-2. Check if payloads are returned unencoded in responses
-3. Test different contexts (HTML, JSON, XML)
-4. Check content-type headers and their enforcement
-5. Test different encoding schemes
+### 1. Reflected XSS
+**What to test:**
+- URL parameters
+- Form inputs
+- HTTP headers
 
-## Remediation
-1. Apply proper encoding based on the context
-2. Implement Content-Security-Policy headers
-3. Use JSON serialization for API responses
-4. Set proper content-type headers
-5. Implement input validation and sanitization
+**Test payloads:**
+\`\`\`html
+<script>alert('XSS')</script>
+<img src=x onerror=alert('XSS')>
+<svg onload=alert('XSS')>
+javascript:alert('XSS')
+\`\`\`
+
+### 2. Stored XSS
+**What to test:**
+- User profiles
+- Comments and reviews
+- File uploads
+- Database-stored content
+
+**Advanced payloads:**
+\`\`\`html
+<script>
+fetch('/api/admin', {
+  method: 'POST',
+  body: JSON.stringify({action: 'createUser', role: 'admin'}),
+  headers: {'Content-Type': 'application/json'}
+});
+</script>
+\`\`\`
+
+### 3. DOM-based XSS
+**What to test:**
+- Client-side JavaScript processing
+- URL fragments
+- PostMessage APIs
+- Client-side templating
+
+**Test techniques:**
+\`\`\`javascript
+location.hash = '<img src=x onerror=alert(1)>'
+window.postMessage('<script>alert(1)</script>', '*')
+\`\`\`
+
+## Filter Bypass Techniques
+
+### 1. Encoding Bypass
+\`\`\`html
+&lt;script&gt;alert('XSS')&lt;/script&gt;
+%3Cscript%3Ealert('XSS')%3C/script%3E
+\u003cscript\u003ealert('XSS')\u003c/script\u003e
+\`\`\`
+
+### 2. Case Variation
+\`\`\`html
+<ScRiPt>alert('XSS')</ScRiPt>
+<SCRIPT>alert('XSS')</SCRIPT>
+\`\`\`
+
+### 3. Alternative Tags and Events
+\`\`\`html
+<iframe src=javascript:alert('XSS')>
+<details open ontoggle=alert('XSS')>
+<marquee onstart=alert('XSS')>
+\`\`\`
+
+## Advanced Testing Techniques
+- Polyglot payloads
+- Context-aware testing
+- CSP bypass techniques
+- Framework-specific vectors
+
+## Content Security Policy Testing
+- Test CSP header effectiveness
+- Look for unsafe-inline and unsafe-eval
+- Test nonce and hash implementations
+- Check for CSP bypass vectors
+
+## Tools
+- Burp Suite XSS extensions
+- XSSHunter for blind XSS
+- DOMPurify testing
+- Browser developer tools
+- Custom payload generators
 `,
 
     "rate-limiting": `
-# API Rate Limiting Testing Guide
+# Rate Limiting Testing Guide
 
-## Understanding Rate Limiting
-Rate limiting protects APIs from abuse, DoS attacks, and resource exhaustion.
+## Overview
+Rate limiting controls how frequently users can make requests to an API to prevent abuse and ensure service availability.
 
-## Common Vulnerabilities
-1. **Missing Rate Limits**: No restrictions on request frequency
-2. **Per-Endpoint Bypass**: Limits applied inconsistently across endpoints
-3. **Distributed Attacks**: Attacks from multiple sources
-4. **Account Enumeration**: Using rate limit errors to identify valid accounts
+## Rate Limiting Bypass Techniques
+
+### 1. IP Address Manipulation
+**What to test:**
+- X-Forwarded-For header manipulation
+- X-Real-IP header spoofing
+- Multiple IP addresses rotation
+- IPv4 vs IPv6 variations
+
+**Test headers:**
+\`\`\`
+X-Forwarded-For: 192.168.1.1
+X-Real-IP: 10.0.0.1
+X-Originating-IP: 172.16.0.1
+X-Remote-IP: 203.0.113.1
+X-Remote-Addr: 198.51.100.1
+\`\`\`
+
+### 2. User Agent Variation
+**What to test:**
+- Different user agent strings
+- Empty or missing user agents
+- Custom user agent values
+
+### 3. Authentication Token Cycling
+**What to test:**
+- Multiple valid tokens
+- Token rotation strategies
+- Anonymous vs authenticated limits
+
+### 4. Distributed Requests
+**What to test:**
+- Multiple concurrent connections
+- Request distribution patterns
+- Session-based rate limiting
 
 ## Testing Methodology
-1. Make rapid, repeated requests to endpoints
-2. Test different authentication states (anonymous vs. authenticated)
-3. Distribute requests across different IPs or accounts
-4. Check for informative rate limit headers
-5. Test bypasses using different parameters or methods
 
-## Remediation
-1. Implement consistent rate limiting
-2. Use token bucket or leaky bucket algorithms
-3. Apply rate limits based on multiple factors (IP, user, endpoint)
-4. Return standard 429 responses with clear headers
-5. Implement progressive penalties for abuse
-`,
+### 1. Identify Rate Limiting Implementation
+- Send requests at normal rate
+- Gradually increase request frequency
+- Identify threshold and time windows
+- Analyze error responses and headers
+
+### 2. Bypass Testing
+\`\`\`bash
+# Test header manipulation
+for ip in 192.168.1.{1..100}; do
+  curl -H "X-Forwarded-For: $ip" https://api.example.com/endpoint
+done
+
+# Test with different user agents
+curl -H "User-Agent: Bot1" https://api.example.com/endpoint
+curl -H "User-Agent: Bot2" https://api.example.com/endpoint
+\`\`\`
+
+### 3. Response Analysis
+- Check for rate limit headers
+- Analyze HTTP status codes
+- Monitor response times
+- Look for inconsistent behavior
+
+## Rate Limit Headers to Check
+\`\`\`
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 99
+X-RateLimit-Reset: 1640995200
+Retry-After: 60
+\`\`\`
+
+## Advanced Testing
+
+### 1. Race Condition Testing
+- Send simultaneous requests
+- Test for inconsistent counting
+- Look for temporary bypass windows
+
+### 2. Algorithm Analysis
+- Token bucket vs leaky bucket
+- Fixed window vs sliding window
+- Per-user vs global limits
+
+### 3. Resource-Specific Testing
+- Different endpoints may have different limits
+- POST vs GET request limits
+- File upload rate limiting
+
+## Tools and Scripts
+- Burp Suite Intruder
+- Custom rate testing scripts
+- Apache Bench (ab)
+- wrk load testing tool
+- Custom Python/Node.js scripts
+
+## Expected Behaviors
+- Consistent rate limit enforcement
+- Proper error messages (HTTP 429)
+- Informative rate limit headers
+- Graceful degradation under load
+`
   };
 
   return guides[topic] || "Guide not found for the specified topic.";

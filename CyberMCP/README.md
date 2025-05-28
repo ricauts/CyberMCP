@@ -1,180 +1,143 @@
-# CyberMCP - Cybersecurity API Testing with MCP
+# 🔒 CyberMCP
 
-CyberMCP is a Model Context Protocol (MCP) server designed for testing backend APIs for security vulnerabilities. It provides a set of specialized tools and resources that can be used by LLMs to identify common security issues in APIs.
+**AI-powered Cybersecurity API Testing with Model Context Protocol (MCP)**
 
-## Features
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.4%2B-blue.svg)](https://www.typescriptlang.org/)
 
-- **Authentication Vulnerability Testing**: Check for JWT vulnerabilities, authentication bypass, and weak authentication mechanisms
-- **Injection Testing**: Test for SQL injection, XSS, and other injection vulnerabilities
-- **Data Leakage Testing**: Identify sensitive data exposure issues
-- **Rate Limiting Testing**: Test for rate limiting bypass and DDoS vulnerabilities
-- **Security Headers Testing**: Check for missing or misconfigured security headers
-- **Comprehensive Resources**: Access checklists and guides for API security testing
-- **Authentication Support**: Multiple authentication methods to test secured endpoints
+CyberMCP is a Model Context Protocol (MCP) server that enables AI agents to perform comprehensive security testing on backend APIs. It provides 14 specialized security tools and 10 resources for identifying vulnerabilities like authentication bypass, injection attacks, data leakage, and security misconfigurations.
 
-## Project Structure
+## 🚀 Quick Start
+
+```bash
+# Clone and setup
+git clone https://github.com/your-username/CyberMCP.git
+cd CyberMCP
+npm install
+npm run build
+
+# Test the server
+npm run test-server
+
+# Start interactive testing
+npm run test-interactive
+```
+
+## ✨ Features
+
+- **🔐 Authentication Testing** - JWT analysis, bypass detection, OAuth2 flows
+- **💉 Injection Testing** - SQL injection, XSS vulnerability detection  
+- **📊 Data Protection** - Sensitive data exposure, path traversal checks
+- **⏱️ Rate Limiting** - DoS vulnerability assessment
+- **🛡️ Security Headers** - OWASP security header validation
+- **📚 Comprehensive Resources** - Security checklists and testing guides
+
+## 🛠️ Security Tools (14 Total)
+
+| Category | Tools |
+|----------|-------|
+| **Authentication** | `basic_auth`, `token_auth`, `oauth2_auth`, `api_login`, `auth_status`, `clear_auth`, `jwt_vulnerability_check`, `auth_bypass_check` |
+| **Injection Testing** | `sql_injection_check`, `xss_check` |
+| **Data Protection** | `sensitive_data_check`, `path_traversal_check` |
+| **Infrastructure** | `rate_limit_check`, `security_headers_check` |
+
+## 🎯 IDE Integration
+
+CyberMCP works with all major AI-powered IDEs:
+
+- **Claude Desktop** - Direct MCP integration
+- **Cursor IDE** - Built-in MCP support  
+- **Windsurf (Codeium)** - Native MCP protocol
+- **VS Code + Cline** - Extension-based integration
+
+> 📖 **[Complete Setup Guide](docs/SETUP_GUIDE.md)** - Detailed configuration for each IDE
+
+## 📋 Usage Example
+
+```text
+"Use basic_auth with username 'admin' and password 'secret123' 
+then use auth_bypass_check on https://api.example.com/users 
+to test for authentication bypass vulnerabilities"
+```
+
+The AI agent will:
+1. Configure authentication credentials
+2. Test the protected endpoint for bypass vulnerabilities  
+3. Provide detailed security analysis and recommendations
+
+## 📊 Testing & Validation
+
+```bash
+# Comprehensive tool testing
+npm run test-tools
+
+# Manual interactive testing  
+npm run test-interactive
+
+# Quick setup verification
+npm run quick-start
+
+# MCP Inspector (GUI)
+npm run inspector
+```
+
+## 📁 Project Structure
 
 ```
 CyberMCP/
-├── src/
-│   ├── tools/           # MCP tools for security testing
-│   ├── resources/       # MCP resources (checklists, guides)
-│   ├── transports/      # Custom transport implementations
-│   ├── utils/           # Utility functions and auth management
-│   └── index.ts         # Main entry point
-├── package.json         # Dependencies and scripts
-├── tsconfig.json        # TypeScript configuration
-└── README.md            # This file
+├── src/                    # TypeScript source code
+│   ├── tools/             # 14 security testing tools
+│   ├── resources/         # Security checklists & guides
+│   └── utils/             # Authentication & utilities
+├── docs/                  # Documentation
+├── scripts/               # Testing & utility scripts  
+├── examples/              # Configuration examples
+├── dist/                  # Built JavaScript (generated)
+└── README.md              # This file
 ```
 
-## Installation
+## 🔧 Development
 
-1. Clone the repository:
-   ```
-   git clone https://github.com/your-username/CyberMCP.git
-   cd CyberMCP
-   ```
+```bash
+# Development mode with hot reload
+npm run dev
 
-2. Install dependencies:
-   ```
-   npm install
-   ```
+# Build TypeScript
+npm run build
 
-3. Build the project:
-   ```
-   npm run build
-   ```
-
-## Usage
-
-### Running the MCP Server
-
-You can run the server using either the stdio transport (default) or HTTP transport:
-
-**Using stdio transport (for integration with LLM platforms):**
-```
+# Start server (stdio mode)
 npm start
-```
 
-**Using HTTP transport (for local development and testing):**
-```
+# Start HTTP server
 TRANSPORT=http PORT=3000 npm start
 ```
 
-### Connecting to the Server
+## 📖 Documentation
 
-The MCP server can be connected to any MCP client, including LLM platforms that support the Model Context Protocol.
+- **[Setup Guide](docs/SETUP_GUIDE.md)** - Detailed installation and configuration
+- **[Project Summary](docs/PROJECT_SUMMARY.md)** - Complete feature overview
+- **[Testing Results](docs/TESTING_RESULTS.md)** - Validation and test coverage
 
-## Security Tools
+## 🤝 Contributing
 
-### Authentication
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/new-security-tool`
+3. Make your changes and add tests
+4. Submit a pull request
 
-CyberMCP supports several authentication methods to test secured APIs:
+## 📄 License
 
-- **Basic Authentication**: Set up HTTP Basic Auth with username and password
-- **Token Authentication**: Use bearer tokens, JWT, or custom token formats
-- **OAuth2 Authentication**: Full OAuth2 flow support with different grant types
-- **Custom API Login**: Authenticate against any login API endpoint
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-Authentication Tools:
-- `basic_auth`: Authenticate with username/password
-- `token_auth`: Set up token-based authentication
-- `oauth2_auth`: Perform OAuth2 authentication
-- `api_login`: Login using a custom API endpoint
-- `auth_status`: Check current authentication status
-- `clear_auth`: Clear the current authentication state
+## 🔗 Resources
 
-### Authentication Testing
+- [Model Context Protocol](https://modelcontextprotocol.io/) - Official MCP documentation
+- [OWASP API Security](https://owasp.org/www-project-api-security/) - API security best practices
+- [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) - Development framework
 
-- **JWT Vulnerability Check**: Analyzes JWT tokens for security issues
-- **Authentication Bypass Check**: Tests endpoints for authentication bypass vulnerabilities
+---
 
-### Injection Testing
+**🔒 Secure your APIs with AI-powered testing!**
 
-- **SQL Injection Check**: Tests parameters for SQL injection vulnerabilities
-- **XSS Check**: Tests for Cross-Site Scripting vulnerabilities
-
-### Data Leakage Testing
-
-- **Sensitive Data Check**: Identifies leaked PII, credentials, and sensitive information
-- **Path Traversal Check**: Tests for directory traversal vulnerabilities
-
-### Security Headers Testing
-
-- **Security Headers Check**: Analyzes HTTP headers for security best practices
-
-## Resources
-
-### Checklists
-
-Access security checklists via `cybersecurity://checklists/{category}` where category can be:
-- `authentication`
-- `injection`
-- `data_leakage`
-- `rate_limiting`
-- `general`
-
-### Guides
-
-Access detailed testing guides via `guides://api-testing/{topic}` where topic can be:
-- `jwt-testing`
-- `auth-bypass`
-- `sql-injection`
-- `xss`
-- `rate-limiting`
-
-## Required Information for API Testing
-
-To effectively test an API for security vulnerabilities, you'll need:
-
-1. **API Endpoints**: URLs of the endpoints to test
-2. **Authentication Information**: Credentials or tokens for accessing secured endpoints
-3. **Parameter Names**: Names of the parameters that accept user input
-4. **Test Data**: Sample valid data for parameters
-5. **Expected Behavior**: What the normal response should look like
-6. **Authentication Flow**: How authentication works in the target API
-
-## Authentication Examples
-
-### Basic Authentication
-
-```
-basic_auth:
-  username: "admin"
-  password: "secure_password"
-```
-
-### Token Authentication
-
-```
-token_auth:
-  token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-  token_type: "Bearer"
-  expires_in: 3600
-```
-
-### OAuth2 Authentication
-
-```
-oauth2_auth:
-  client_id: "client_123"
-  client_secret: "secret_456"
-  token_url: "https://example.com/oauth/token"
-  grant_type: "client_credentials"
-  scope: "read write"
-```
-
-### Custom API Login
-
-```
-api_login:
-  login_url: "https://example.com/api/login"
-  credentials: 
-    username: "admin"
-    password: "secure_password"
-  token_path: "data.access_token"
-```
-
-## License
-
-MIT 
+*For support and questions, please [create an issue](https://github.com/your-username/CyberMCP/issues).* 

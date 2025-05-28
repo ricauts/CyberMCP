@@ -1,0 +1,14 @@
+{
+  "mcp": {
+    "servers": {
+      "cybermcp": {
+        "command": "node",
+        "args": ["dist/index.js"],
+        "cwd": "/path/to/CyberMCP",
+        "env": {
+          "NODE_ENV": "production"
+        }
+      }
+    }
+  }
+} 
